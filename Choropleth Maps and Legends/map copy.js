@@ -46,9 +46,15 @@ async function createMap() {
       data: phillyCensus,
     });
 
-    //   create the color value scale for the data using a quantile function
-    const scale = getQuantileScale(phillyCensus, "POP_DENSITY");
+    const scaleType = {
+      equal: "equalInterval",
+      quantile: "quantile",
+    };
 
+    //   create the color value scale for the data
+    const scale = getMapScale(phillyCensus, "POP_DENSITY", scaleType.quantile);
+
+    // add layer for philly data
     map.addLayer({
       id: "phillyPop",
       type: "fill",
@@ -60,6 +66,7 @@ async function createMap() {
           "interpolate",
           ["linear"],
           ["get", "POP_DENSITY"],
+          // use our quantile scale function that we created above to automatically generate the color scale
           ...scale[0],
         ],
         //   change opacity based on zoom level
@@ -83,11 +90,12 @@ async function createMap() {
     const landuseData = map.querySourceFeatures("composite", {
       sourceLayer: "landuse",
     });
-    //console.log(landuseData);
+    console.log(landuseData)
+  
+
     const landuseTypes = [
       ...new Set(landuseData.map((d) => d.properties.class)),
     ];
-    console.log(landuseTypes);
 
     const landuseColors = [
       ["park", "MediumSpringGreen"],
@@ -185,6 +193,7 @@ async function createMap() {
     });
     //  add the legend items to the legend
     legend.appendChild(ramp);
+
     // add a popup to the map on hover
     const hoverPopup = new mapboxgl.Popup({
       closeButton: false,
@@ -215,6 +224,16 @@ async function createMap() {
       map.getCanvas().style.cursor = "";
       hoverPopup.remove();
     });
+
+    /**
+     * CUSTOMIZING CATEGORICAL DATA
+     * now that we have a choropleth map, lets also try to add another layer from the Philly311 dataset.
+     * Instead of downloading the data, we are going to fetch it from the web, so that it can update automatically.
+     * once the data is fetched, we will add it to the map as a new source and layer.
+     *
+     */
+
+    // retrieve the data from the 311 carto dataset for the past 14 days (output: geojson)
     fetch(
       "https://phl.carto.com/api/v2/sql?format=GeoJSON&q=SELECT * FROM public_cases_fc WHERE requested_datetime >= current_date - 14"
     )
@@ -236,9 +255,6 @@ async function createMap() {
             responseTypes[d.properties.subject] = 1;
           }
         });
-
-        // reassign the data features to this new filtered and uppercase version
-        data.features = philly311;
 
         //   create a function to get the top 10 responses
         function getTopTenResponses(data) {
@@ -265,7 +281,10 @@ async function createMap() {
           return topTen;
         }
 
-        //   call the getTopTenResponses function to get the top 10 responses so we know what to filter for
+        // Temporary: call the getTopTenResponses function to get the top 10 responses so we know what to filter for
+        console.log(getTopTenResponses(responseTypes));
+        // reassign the data features to this new filtered and uppercase version
+        data.features = philly311;
         const topIssues = Object.keys(getTopTenResponses(responseTypes));
 
         // add a new source to the map from the filtered data
@@ -282,7 +301,39 @@ async function createMap() {
           source: "philly311",
           layout: {},
           paint: {
-            "circle-color": [
+            // set the circle opacity based on zoom level
+            "circle-opacity": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              11,
+              0,
+              12,
+              1,
+            ],
+
+            //   change the stroke opacity based on zoom
+            "circle-stroke-opacity": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              11,
+              0,
+              12,
+              1,
+            ],
+
+            "circle-pitch-scale": "viewport",
+            //   filter color based on status
+            //   "circle-color":
+            //     //   if the status is closed
+            //     ["case", ["==", ["get", "status"], "Closed"], "blue", "red"],
+
+            /**
+             * assign circle color based on the subject of the complaint
+             * the subject of the complaint is a string, and the color is a rgb, hex, hsl, or web color (ex "red")
+             */
+             "circle-color": [
               "match",
               ["get", "subject"],
               topIssues[0],
@@ -307,30 +358,7 @@ async function createMap() {
               "rgb(128, 63, 138)",
               "rgba(33, 33, 33, 125)", //fallback for other categories
             ],
-
-            // set the circle opacity based on zoom level
-            "circle-opacity": [
-              "interpolate",
-              ["linear"],
-              ["zoom"],
-              11,
-              0,
-              12,
-              1,
-            ],
-
-            //   change the stroke opacity based on zoom
-            "circle-stroke-opacity": [
-              "interpolate",
-              ["linear"],
-              ["zoom"],
-              11,
-              0,
-              12,
-              1,
-            ],
-
-            "circle-pitch-scale": "viewport",
+  
             //   change the stroke color based on the status: open or closed ticket
             "circle-stroke-color": [
               "match",
@@ -340,98 +368,27 @@ async function createMap() {
               "white", //open tickets
             ],
             //   set the stroke width based on the hover state
-            "circle-stroke-width": [
-              "case",
-              ["boolean", ["feature-state", "hover"], false],
-              4,
-              1,
-            ],
-            //   set the circle radius based on the hover state
-            "circle-radius": [
-              "case",
-              ["boolean", ["feature-state", "hover"], false],
-              10 * pointScaleMultiplier,
-              5 * pointScaleMultiplier,
-            ],
           },
         });
-
-        // update the info panel on the right to describe the point data
-        map.on("mousemove", (event) => {
-          const bounds = map.queryRenderedFeatures(event.point, {
-            layers: ["philly311Circles"],
-          });
-
-          if (bounds.length > 0) {
-            const { subject, status, requested_datetime, address, media_url} =
-              bounds[0].properties;
-            document.getElementById(
-              "pd"
-            ).innerHTML = `<h3>${address}</h3><p><em>${subject}<p>Status: ${status}</p><p>${requested_datetime}</p></em></p>`;
-            if (media_url && mobileCheck() === false) {
-              document.getElementById(
-                "pd"
-              ).innerHTML += `<img src="${media_url}" alt="image of the 311 request"/>`;
-            }
-          }
-        });
-        
-     // create a variable to hold the hover state for the points
-     let hoveredStateId = null;
-
-
-     // change stroke width of philly311 points on hover
-     map.on("mousemove", "philly311Circles", (e) => {
-       if (e.features.length > 0) {
-         // set the cursor to pointer
-         map.getCanvas().style.cursor = "pointer";
-
-
-         if (hoveredStateId) {
-           map.setFeatureState(
-             { source: "philly311", id: hoveredStateId },
-             { hover: false }
-           );
-         }
-         hoveredStateId = e.features[0].id;
-         map.setFeatureState(
-           { source: "philly311", id: hoveredStateId },
-           { hover: true }
-         );
-       }
-     });
-
-
-     // When the mouse leaves the point-fill layer, update the feature state of the previously hovered feature.
-     map.on("mouseleave", "philly311Circles", () => {
-       // set the cursor to default
-       map.getCanvas().style.cursor = "";
-
-
-       if (hoveredStateId) {
-         map.setFeatureState(
-           { source: "philly311", id: hoveredStateId },
-           { hover: false }
-         );
-       }
-       hoveredStateId = null;
-      });
-
-            // on click, fly to a point
-            map.on("click", "philly311Circles", (e) => {
-              map.flyTo({
-                center: e.features[0].geometry.coordinates,
-                zoom: 18,
-                pitch: 60,
-                // get a random bearing between 0 and 360
-                bearing: Math.floor(Math.random() * 90),
-              });
-            });
-      
       });
   });
 
-  //____________________________AUTO GENERATW LEGEND ______KEEP LAST____________________________
+  /**
+   * AUTO GENERATE LEGEND
+   * This section offers two methods to generate a legend: Quantile and Equal Interval
+   * Quantile is often used for choropleth maps, while Equal Interval is often used for heatmaps.
+   * Both methods are acceptable, but tell a different story.
+   *
+   * In this example, we will use Quantile to generate our legend, but you can easily switch to Equal Interval
+   * by switching the getQuantileScale function to getEqualIntervalScale throughout the code.
+   *
+   * I encourage you to check both methods and see which one tells a better story for your data.
+   *
+   * CASE 1: QUANTILE SCALE:
+   * Quantile slices the domain into intervals of (roughly) equal absolute frequency
+   * (i.e. equal number of individuals for each color)
+   */
+
   // number of bins for your legend
   const numberOfBins = 6;
 
@@ -487,6 +444,14 @@ async function createMap() {
   // select the color ramp to be used
   const selectedColorRamp = colorRamp.greyScale;
 
+  function getMapScale(jsonSource, prop, scaleType) {
+    if (scaleType === "equalInterval") {
+      return getEqualIntervalScale(jsonSource, prop);
+    } else {
+      return getQuantileScale(jsonSource, prop);
+    }
+  }
+
   function getQuantileScale(jsonSource, prop) {
     /**
      * @param {array} jsonSource - the data source
@@ -529,6 +494,89 @@ async function createMap() {
     return [colorScale, groups, colorBreaks];
   }
 
+  /**
+   * CASE 2: EQUAL INTERVAL SCALE:
+   * Equal interval slices the domain into intervals of (roughly) equal width
+   * (i.e. equal range of values for each color)
+   */
+
+  function getEqualIntervalScale(jsonSource, prop) {
+    /**
+     * @param {array} jsonSource - the data source
+     * @param {string} prop - the property to be used for the scale
+     */
+
+    //sort the data in ascending order and assign to a data array
+    const data = jsonSource.features
+      .map((el) => el.properties[prop])
+      .sort((a, b) => a - b);
+
+    // divide the range of the data into equal intervals
+    const interval = (d3.max(data) - d3.min(data)) / numberOfBins;
+
+    // get the value at each threshold (i.e. the min value of each interval)
+    const groups = [];
+    for (let i = 0; i < numberOfBins; i++) {
+      groups.push(d3.min(data) + i * interval);
+    }
+
+    //   break down the color ramp to match the number of bins, from the middle out
+    const halfRamp1 = [];
+    const halfRamp2 = [];
+
+    for (let i = 0; i < numberOfBins; i++) {
+      if (i % 2 == 0) {
+        halfRamp1.push(selectedColorRamp[i]);
+
+        if (halfRamp1.length + halfRamp2.length == numberOfBins) {
+          break;
+        }
+      } else {
+        halfRamp2.push(selectedColorRamp[selectedColorRamp.length - i]);
+        if (halfRamp1.length + halfRamp2.length == numberOfBins) {
+          break;
+        }
+      }
+    }
+
+    // combine the two color ramps into one after reversing the second one
+    const colorRamp = halfRamp1.concat(halfRamp2.reverse());
+
+    // create a linear scale based off the data array and assign to the colors array
+    const color = d3.scaleThreshold().domain(groups).range(colorRamp);
+
+    // for each threshold, get the color
+    const colorBreaks = groups.map((d) => {
+      return color(d);
+    });
+
+    // combine values and color breaks into an array of objects
+    const colorScale = groups
+      .map((d, i) => {
+        return Object.values({
+          density: d,
+          color: colorBreaks[i],
+        });
+      })
+      .flat();
+
+    // return an array with the color scale, the groups, and the color breaks
+    return [colorScale, groups, colorBreaks];
+  }
+
+  /**
+   * Utilities- This section contains functions that are used to check if the device is mobile
+   * and to round any numbers to a legible number of significant digits
+   */
+
+  // create a function to check if device is mobile
+  const mobileCheck = () => {
+    return window.innerWidth < 768;
+  };
+
+  // multiple the size of our points if the device is mobile
+  const pointScaleMultiplier = mobileCheck() ? 2 : 1;
+
   //   create a function to round the number to a significant digit
   function round(value) {
     if (value < 1) {
@@ -547,18 +595,5 @@ async function createMap() {
       return Math.round(value / 1000) + "k";
     }
   }
-
-  /**
-   * Utilities- This section contains functions that are used to check if the device is mobile
-   * and to round any numbers to a legible number of significant digits
-   */
-
-  // create a function to check if device is mobile
-  const mobileCheck = () => {
-    return window.innerWidth < 768;
-  };
-
-  // multiple the size of our points if the device is mobile
-  const pointScaleMultiplier = mobileCheck() ? 2 : 1;
 }
 createMap();
